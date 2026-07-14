@@ -1,0 +1,538 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-code
+  namespace: ticket-system
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8">
+      <title>Sistema de Reservas de Entradas</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 760px; margin: 40px auto; line-height: 1.5; }
+        .card { border: 1px solid #ddd; border-radius: 12px; padding: 20px; margin-top: 16px; }
+        button { padding: 12px 18px; border: 0; border-radius: 8px; cursor: pointer; }
+        pre { background: #111; color: #0f0; padding: 16px; border-radius: 8px; white-space: pre-wrap; }
+      </style>
+    </head>
+    <body>
+      <h1>Sistema de Reservas de Entradas</h1>
+    
+      <div class="card">
+        <h2>Evento: Concierto Kubernetes</h2>
+        <p>Compra de entrada simulada sobre arquitectura distribuida en Kubernetes.</p>
+        <button onclick="comprar()">Comprar entrada</button>
+      </div>
+    
+      <div class="card">
+        <h3>Resultado</h3>
+        <pre id="resultado">Esperando acción...</pre>
+      </div>
+    
+      <script>
+        const apiBase = `http://${window.location.hostname}:30081`;
+    
+        async function comprar() {
+          const out = document.getElementById("resultado");
+          out.textContent = "Procesando reserva...";
+    
+          try {
+            const res = await fetch(`${apiBase}/api/comprar`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({
+                cliente: "demo",
+                evento: "concierto-kubernetes"
+              })
+            });
+    
+            const data = await res.json();
+            out.textContent = JSON.stringify(data, null, 2);
+          } catch (err) {
+            out.textContent = "Error conectando con API Gateway: " + err;
+          }
+        }
+      </script>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    RESERVAS_URL = os.getenv("RESERVAS_URL", "http://reservas:8080")
+    
+    def request_json(method, url, payload=None, timeout=5):
+        data = None
+        headers = {"Content-Type": "application/json"}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+    
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+            self.wfile.write(body)
+    
+        def do_OPTIONS(self):
+            self.send_json(200, {"ok": True})
+    
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"service": "api-gateway", "status": "ok"})
+            elif self.path == "/api/status":
+                try:
+                    status, payload = request_json("GET", f"{RESERVAS_URL}/status")
+                    self.send_json(status, payload)
+                except Exception as exc:
+                    self.send_json(503, {"ok": False, "error": "reservas_no_disponible", "detail": str(exc)})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+        def do_POST(self):
+            if self.path != "/api/comprar":
+                self.send_json(404, {"error": "not_found"})
+                return
+    
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+    
+            try:
+                status, result = request_json("POST", f"{RESERVAS_URL}/reservar", payload, timeout=8)
+                self.send_json(status, result)
+            except Exception as exc:
+                self.send_json(503, {
+                    "ok": False,
+                    "error": "servicio_reservas_no_responde",
+                    "detail": str(exc)
+                })
+    
+    if __name__ == "__main__":
+        port = int(os.getenv("PORT", "8080"))
+        print(f"api-gateway escuchando en puerto {port}", flush=True)
+        ThreadingHTTPServer(("", port), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reservas-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import time
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    INVENTARIO_URL = os.getenv("INVENTARIO_URL", "http://inventario:8080")
+    PAGOS_URL = os.getenv("PAGOS_URL", "http://pagos:8080")
+    NOTIFICACIONES_URL = os.getenv("NOTIFICACIONES_URL", "http://notificaciones:8080")
+    DATABASE_URL = os.getenv("DATABASE_URL", "http://database:8080")
+    
+    def request_json(method, url, payload=None, timeout=4):
+        data = None
+        headers = {"Content-Type": "application/json"}
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+    
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+    
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"service": "reservas", "status": "ok"})
+            elif self.path == "/status":
+                try:
+                    _, inv = request_json("GET", f"{INVENTARIO_URL}/asientos", timeout=2)
+                    self.send_json(200, {"ok": True, "inventario": inv})
+                except Exception as exc:
+                    self.send_json(503, {"ok": False, "error": "inventario_no_disponible", "detail": str(exc)})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+        def do_POST(self):
+            if self.path != "/reservar":
+                self.send_json(404, {"error": "not_found"})
+                return
+    
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            cliente = body.get("cliente", "anonimo")
+            evento = body.get("evento", "evento-demo")
+            reserva_id = f"res-{int(time.time() * 1000)}"
+    
+            try:
+                _, inv = request_json("POST", f"{INVENTARIO_URL}/reservar", {
+                    "reserva_id": reserva_id,
+                    "evento": evento,
+                    "cantidad": 1
+                }, timeout=3)
+            except Exception as exc:
+                self.send_json(503, {
+                    "ok": False,
+                    "fase": "inventario",
+                    "error": "inventario_no_disponible",
+                    "accion": "error_controlado_sin_cobro",
+                    "detail": str(exc)
+                })
+                return
+    
+            try:
+                _, pago = request_json("POST", f"{PAGOS_URL}/pagar", {
+                    "reserva_id": reserva_id,
+                    "cliente": cliente,
+                    "monto": 100
+                }, timeout=5)
+            except Exception as exc:
+                try:
+                    request_json("POST", f"{INVENTARIO_URL}/liberar", {
+                        "reserva_id": reserva_id,
+                        "cantidad": 1
+                    }, timeout=2)
+                except Exception:
+                    pass
+    
+                self.send_json(504, {
+                    "ok": False,
+                    "fase": "pagos",
+                    "error": "pago_lento_o_no_disponible",
+                    "accion": "inventario_liberado_y_error_controlado",
+                    "detail": str(exc)
+                })
+                return
+    
+            try:
+                request_json("POST", f"{DATABASE_URL}/guardar", {
+                    "reserva_id": reserva_id,
+                    "cliente": cliente,
+                    "evento": evento,
+                    "pago": pago,
+                    "inventario": inv
+                }, timeout=3)
+                db_status = "guardado"
+            except Exception as exc:
+                db_status = f"no_guardado: {exc}"
+    
+            try:
+                _, notif = request_json("POST", f"{NOTIFICACIONES_URL}/notificar", {
+                    "reserva_id": reserva_id,
+                    "cliente": cliente,
+                    "evento": evento
+                }, timeout=2)
+                notif_status = notif
+            except Exception as exc:
+                notif_status = {
+                    "ok": False,
+                    "warning": "notificacion_fallida_no_critica",
+                    "detail": str(exc)
+                }
+    
+            self.send_json(201, {
+                "ok": True,
+                "reserva_id": reserva_id,
+                "mensaje": "reserva_creada",
+                "inventario": inv,
+                "pago": pago,
+                "persistencia": db_status,
+                "notificacion": notif_status
+            })
+    
+    if __name__ == "__main__":
+        port = int(os.getenv("PORT", "8080"))
+        print(f"reservas escuchando en puerto {port}", flush=True)
+        ThreadingHTTPServer(("", port), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventario-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    DATA_FILE = os.getenv("DATA_FILE", "/data/inventario.json")
+    INITIAL_SEATS = int(os.getenv("INITIAL_SEATS", "50"))
+    lock = threading.Lock()
+    
+    def load_state():
+        if not os.path.exists(DATA_FILE):
+            return {"evento": "concierto-kubernetes", "disponibles": INITIAL_SEATS, "reservas": []}
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    
+    def save_state(state):
+        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+    
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"service": "inventario", "status": "ok"})
+            elif self.path == "/asientos":
+                with lock:
+                    state = load_state()
+                self.send_json(200, {"evento": state["evento"], "disponibles": state["disponibles"]})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+    
+            if self.path == "/reservar":
+                cantidad = int(body.get("cantidad", 1))
+                reserva_id = body.get("reserva_id")
+    
+                with lock:
+                    state = load_state()
+                    if state["disponibles"] < cantidad:
+                        self.send_json(409, {"ok": False, "error": "sin_asientos_disponibles"})
+                        return
+    
+                    state["disponibles"] -= cantidad
+                    state["reservas"].append({"reserva_id": reserva_id, "cantidad": cantidad})
+                    save_state(state)
+    
+                self.send_json(200, {"ok": True, "reserva_id": reserva_id, "disponibles": state["disponibles"]})
+    
+            elif self.path == "/liberar":
+                cantidad = int(body.get("cantidad", 1))
+                reserva_id = body.get("reserva_id")
+    
+                with lock:
+                    state = load_state()
+                    state["disponibles"] += cantidad
+                    state["reservas"] = [r for r in state["reservas"] if r.get("reserva_id") != reserva_id]
+                    save_state(state)
+    
+                self.send_json(200, {"ok": True, "reserva_id": reserva_id, "disponibles": state["disponibles"]})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+    if __name__ == "__main__":
+        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+        if not os.path.exists(DATA_FILE):
+            save_state({"evento": "concierto-kubernetes", "disponibles": INITIAL_SEATS, "reservas": []})
+    
+        port = int(os.getenv("PORT", "8080"))
+        print(f"inventario escuchando en puerto {port}", flush=True)
+        ThreadingHTTPServer(("", port), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pagos-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import random
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    DELAY_SECONDS = float(os.getenv("PAYMENT_DELAY_SECONDS", "0"))
+    FAIL_RATE = float(os.getenv("PAYMENT_FAIL_RATE", "0"))
+    
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+    
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"service": "pagos", "status": "ok", "delay_seconds": DELAY_SECONDS})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+        def do_POST(self):
+            if self.path != "/pagar":
+                self.send_json(404, {"error": "not_found"})
+                return
+    
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+    
+            if DELAY_SECONDS > 0:
+                time.sleep(DELAY_SECONDS)
+    
+            if random.random() < FAIL_RATE:
+                self.send_json(503, {"ok": False, "error": "pago_rechazado_o_servicio_externo_fallando"})
+                return
+    
+            self.send_json(200, {
+                "ok": True,
+                "reserva_id": body.get("reserva_id"),
+                "estado": "pago_aprobado",
+                "monto": body.get("monto", 100)
+            })
+    
+    if __name__ == "__main__":
+        port = int(os.getenv("PORT", "8080"))
+        print(f"pagos escuchando en puerto {port}", flush=True)
+        ThreadingHTTPServer(("", port), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notificaciones-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import random
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    FAIL_RATE = float(os.getenv("NOTIFICATION_FAIL_RATE", "0"))
+    
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+    
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"service": "notificaciones", "status": "ok"})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+        def do_POST(self):
+            if self.path != "/notificar":
+                self.send_json(404, {"error": "not_found"})
+                return
+    
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+    
+            if random.random() < FAIL_RATE:
+                self.send_json(503, {"ok": False, "error": "servicio_notificaciones_inactivo"})
+                return
+    
+            print(f"Correo simulado enviado para reserva {body.get('reserva_id')}", flush=True)
+            self.send_json(200, {
+                "ok": True,
+                "estado": "correo_simulado_enviado",
+                "reserva_id": body.get("reserva_id")
+            })
+    
+    if __name__ == "__main__":
+        port = int(os.getenv("PORT", "8080"))
+        print(f"notificaciones escuchando en puerto {port}", flush=True)
+        ThreadingHTTPServer(("", port), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    
+    DATA_FILE = os.getenv("DATA_FILE", "/data/reservas.json")
+    lock = threading.Lock()
+    
+    def load_rows():
+        if not os.path.exists(DATA_FILE):
+            return []
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    
+    def save_rows(rows):
+        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=2)
+    
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+    
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"service": "database", "status": "ok"})
+            elif self.path == "/reservas":
+                with lock:
+                    rows = load_rows()
+                self.send_json(200, {"ok": True, "total": len(rows), "reservas": rows})
+            else:
+                self.send_json(404, {"error": "not_found"})
+    
+        def do_POST(self):
+            if self.path != "/guardar":
+                self.send_json(404, {"error": "not_found"})
+                return
+    
+            length = int(self.headers.get("Content-Length", 0))
+            row = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+    
+            with lock:
+                rows = load_rows()
+                rows.append(row)
+                save_rows(rows)
+    
+            self.send_json(201, {"ok": True, "guardado": True, "total": len(rows)})
+    
+    if __name__ == "__main__":
+        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    
+        if not os.path.exists(DATA_FILE):
+            save_rows([])
+    
+        port = int(os.getenv("PORT", "8080"))
+        print(f"database escuchando en puerto {port}", flush=True)
+        ThreadingHTTPServer(("", port), Handler).serve_forever()

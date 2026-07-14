@@ -1,0 +1,17 @@
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Kubernetes sensibles
+*.kubeconfig
+kubeconfig
+node-token
+datos-persona2.txt
+
+# Evidencias pesadas opcionales
+*.mp4
+*.zip
