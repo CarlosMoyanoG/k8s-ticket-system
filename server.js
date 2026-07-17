@@ -29,6 +29,7 @@ function createApp() {
       '; color:white; text-align:center; padding-top:80px;">' +
       '<h1>Sistemas Distribuidos - CI/CD</h1>' +
       '<h2>Version desplegada: ' + APP_VERSION + '</h2>' +
+      '<h3>Nombre: Carlos Moyano </h3>' +
       '<p>Pod: ' + os.hostname() + '</p>' +
       '</body></html>'
     );
