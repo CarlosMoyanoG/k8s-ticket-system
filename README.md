@@ -150,8 +150,6 @@ curl -X POST http://100.81.223.82:30081/api/comprar \
 - [chaos/02-pagos-lento.sh](chaos/02-pagos-lento.sh)
 - [chaos/03-correo-perdido.sh](chaos/03-correo-perdido.sh)
 - [chaos/04-diluvio-peticiones.sh](chaos/04-diluvio-peticiones.sh)
-- [scripts/load-test.sh](scripts/load-test.sh)
-- [scripts/validacion-manana.sh](scripts/validacion-manana.sh)
 
 ## Resultado esperado de cada fallo implementado
 
@@ -159,28 +157,3 @@ curl -X POST http://100.81.223.82:30081/api/comprar \
 - `Pasarela Lenta`: compra cancelada con compensación; inventario liberado.
 - `Correo Perdido`: compra completada con `warning=notificacion_fallida_no_critica`.
 - `Diluvio de Peticiones`: parte del tráfico recibe `429` o error controlado por bulkhead.
-
-## Limitaciones honestas
-
-- La validación multi-nodo solo puede afirmarse si el `worker` de `Persona 2` aparece `Ready`.
-- Con `podAntiAffinity required`, si el día de la demo solo hay un nodo `Ready`, una réplica de `reservas` y una de `inventario` quedarán `Pending`. Esto es intencional para demostrar requisito multi-nodo real y se documenta en [docs/pruebas-finales-manana.md](docs/pruebas-finales-manana.md).
-- No se afirma “100% probado en vivo con Persona 2” hasta repetir la validación final con ambos nodos activos.
-
-## Mapeo explícito con la rúbrica
-
-- Parte I:
-  - seis componentes: sí;
-  - comunicación REST: sí;
-  - Kubernetes multi-nodo: preparado, sujeto a que `Persona 2` esté `Ready`;
-  - manifiestos YAML: sí;
-  - diagrama: [docs/architecture.md](docs/architecture.md);
-  - README con despliegue: sí.
-- Parte II:
-  - tabla de seis fallos: sí, en este README y en [docs/mapeo-fallos.md](docs/mapeo-fallos.md).
-- Parte III:
-  - cuatro fallos implementados: sí;
-  - dos fallos restantes como análisis técnico: sí.
-- Parte IV:
-  - guion de demo: [docs/guion-demo.md](docs/guion-demo.md).
-- Parte V:
-  - informe técnico de fallos restantes: [docs/informe-tecnico-fallos-restantes.md](docs/informe-tecnico-fallos-restantes.md).
