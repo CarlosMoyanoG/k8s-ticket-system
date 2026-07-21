@@ -110,15 +110,13 @@ curl -X POST http://100.81.223.82:30081/api/comprar \
 
 ### 5. Base de Datos Intermitente
 
-- Estado: análisis técnico documentado.
-- Documento: [docs/informe-tecnico-fallos-restantes.md](docs/informe-tecnico-fallos-restantes.md)
+- Estado: analizado.
 - Limitación actual: si falla el registro final de booking, `reservas` expone `persistencia.estado=pendiente` o `no_guardado`; no se oculta el problema.
 
 ### 6. Condición de Carrera
 
-- Estado: análisis técnico documentado.
-- Documento: [docs/informe-tecnico-fallos-restantes.md](docs/informe-tecnico-fallos-restantes.md)
-- Nota: la disponibilidad de asientos sí se centralizó en `database` con lock y PVC, lo que mejora consistencia para el inventario replicado. Aun así, el análisis de carrera documenta cómo se endurecería esto en producción.
+- Estado: analizado.
+- Nota: la disponibilidad de asientos sí se centralizó en `database` con lock y PVC, lo que mejora consistencia para el inventario replicado.
 
 ## Tabla de seis fallos
 
@@ -128,8 +126,8 @@ curl -X POST http://100.81.223.82:30081/api/comprar \
 | Pasarela Lenta | Implementado | Timeout + retry + compensación + circuit breaker | `chaos/02-pagos-lento.sh` |
 | Diluvio de Peticiones | Implementado | Bulkhead con semaphore | `chaos/04-diluvio-peticiones.sh` |
 | Correo Perdido | Implementado | Degradación no crítica | `chaos/03-correo-perdido.sh` |
-| Base de Datos Intermitente | Analizado | Persistencia pendiente/no_guardado | `docs/informe-tecnico-fallos-restantes.md` |
-| Condición de Carrera | Analizado | Centralización + endurecimiento transaccional futuro | `docs/informe-tecnico-fallos-restantes.md` |
+| Base de Datos Intermitente | Analizado | Persistencia pendiente/no_guardado | Análisis interno |
+| Condición de Carrera | Analizado | Centralización + endurecimiento transaccional futuro | Análisis interno |
 
 ## Archivos Kubernetes principales
 
@@ -157,3 +155,14 @@ curl -X POST http://100.81.223.82:30081/api/comprar \
 - `Pasarela Lenta`: compra cancelada con compensación; inventario liberado.
 - `Correo Perdido`: compra completada con `warning=notificacion_fallida_no_critica`.
 - `Diluvio de Peticiones`: parte del tráfico recibe `429` o error controlado por bulkhead.
+
+## Limitaciones honestas
+
+- La validación multi-nodo solo puede afirmarse si el `worker` de `Persona 2` aparece `Ready`.
+- Con `podAntiAffinity required`, si el día de la demo solo hay un nodo `Ready`, una réplica de `reservas` y una de `inventario` quedarán `Pending`. Esto es intencional para demostrar requisito multi-nodo real.
+- No se afirma “100% probado en vivo con Persona 2” hasta repetir la validación final con ambos nodos activos.
+
+## Documentos conservados
+
+- Evidencia de comandos: [docs/evidencia-comandos.md](docs/evidencia-comandos.md)
+- Mapeo de fallos: [docs/mapeo-fallos.md](docs/mapeo-fallos.md)
