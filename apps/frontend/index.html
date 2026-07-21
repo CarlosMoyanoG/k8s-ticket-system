@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Sistema de Reservas de Entradas</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 760px; margin: 40px auto; line-height: 1.5; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 20px; margin-top: 16px; }
+    button { padding: 12px 18px; border: 0; border-radius: 8px; cursor: pointer; }
+    pre { background: #111; color: #0f0; padding: 16px; border-radius: 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Sistema de Reservas de Entradas</h1>
+
+  <div class="card">
+    <h2>Evento: Concierto Kubernetes</h2>
+    <p>Compra de entrada simulada sobre arquitectura distribuida en Kubernetes.</p>
+    <button onclick="comprar()">Comprar entrada</button>
+  </div>
+
+  <div class="card">
+    <h3>Resultado</h3>
+    <pre id="resultado">Esperando acción...</pre>
+  </div>
+
+  <script>
+    const apiBase = `http://${window.location.hostname}:30081`;
+
+    async function comprar() {
+      const out = document.getElementById("resultado");
+      out.textContent = "Procesando reserva...";
+
+      try {
+        const res = await fetch(`${apiBase}/api/comprar`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            cliente: "demo",
+            evento: "concierto-kubernetes"
+          })
+        });
+
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        out.textContent = "Error conectando con API Gateway: " + err;
+      }
+    }
+  </script>
+</body>
+</html>
