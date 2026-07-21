@@ -72,7 +72,7 @@
   - restauración de `PAYMENT_DELAY_SECONDS=0`.
 - Evidencia a capturar:
   - respuesta de la compra;
-  - `kubectl describe deployment pagos -n ticket-system | grep PAYMENT_DELAY_SECONDS -n`.
+  - `kubectl describe deployment pagos -n ticket-system | grep -n PAYMENT_DELAY_SECONDS`.
 
 ## Minuto 8-10
 

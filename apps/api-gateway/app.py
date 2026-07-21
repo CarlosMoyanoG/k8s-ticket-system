@@ -6,7 +6,7 @@ from urllib import error, request
 
 PORT = int(os.environ.get("PORT", "8080"))
 RESERVAS_URL = os.environ.get("RESERVAS_URL", "http://reservas:8080")
-TIMEOUT = float(os.environ.get("RESERVAS_TIMEOUT_SECONDS", "10"))
+TIMEOUT = float(os.environ.get("RESERVAS_TIMEOUT_SECONDS", "18"))
 
 
 def send_json(handler, status, payload):

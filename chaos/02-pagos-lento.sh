@@ -24,6 +24,10 @@ response1="$(curl -sS -X POST "$GATEWAY_URL/api/comprar" -H "Content-Type: appli
 echo "$response1"
 
 if [[ "$response1" != *'"fase": "pagos"'* ]] || [[ "$response1" != *'"compensacion"'* ]]; then
+  if [[ "$response1" == *'"fase": "gateway"'* ]] && [[ "$response1" == *'"error": "reservas_no_disponible"'* ]]; then
+    echo "Diagnostico: api-gateway vencio antes de que reservas terminara los retries/compensacion de pagos." >&2
+    echo "Revisa RESERVAS_TIMEOUT_SECONDS en api-gateway y reaplica k8s/ antes de repetir este chaos." >&2
+  fi
   echo "La respuesta no muestra timeout/compensacion de pagos" >&2
   exit 1
 fi

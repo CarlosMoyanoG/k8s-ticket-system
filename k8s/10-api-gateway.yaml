@@ -25,7 +25,7 @@ spec:
             - name: RESERVAS_URL
               value: "http://reservas:8080"
             - name: RESERVAS_TIMEOUT_SECONDS
-              value: "12"
+              value: "18"
           volumeMounts:
             - name: app-code
               mountPath: /app/app.py
