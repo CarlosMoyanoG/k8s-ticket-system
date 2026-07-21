@@ -1,3 +1,12 @@
 node_modules/
 npm-debug.log
+node-token
+datos-persona2.txt
+kubeconfig
+*.kubeconfig
+*.mp4
+*.zip
+__pycache__/
+*.pyc
 .DS_Store
+Thumbs.db

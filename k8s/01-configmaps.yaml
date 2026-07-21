@@ -1,0 +1,967 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib import error, request
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    RESERVAS_URL = os.environ.get("RESERVAS_URL", "http://reservas:8080")
+    TIMEOUT = float(os.environ.get("RESERVAS_TIMEOUT_SECONDS", "10"))
+
+
+    def send_json(handler, status, payload):
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+
+    def parse_body(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+    def proxy_purchase(payload):
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        req = request.Request(
+            f"{RESERVAS_URL}/comprar",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=TIMEOUT) as resp:
+                raw = resp.read().decode("utf-8")
+                return resp.status, json.loads(raw) if raw else {}
+        except error.HTTPError as exc:
+            raw = exc.read().decode("utf-8")
+            return exc.code, json.loads(raw) if raw else {}
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/health":
+                return send_json(self, 200, {"status": "ok", "upstream": RESERVAS_URL})
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+        def do_POST(self):
+            if self.path != "/api/comprar":
+                return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+            body = parse_body(self)
+            try:
+                status, response = proxy_purchase(body)
+                return send_json(self, status, response)
+            except Exception as exc:
+                return send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "fase": "gateway",
+                        "error": "reservas_no_disponible",
+                        "detalle": str(exc),
+                    },
+                )
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"api-gateway escuchando en {PORT}", flush=True)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    GATEWAY_NODEPORT = os.environ.get("GATEWAY_NODEPORT", "30081")
+
+    HTML = f"""<!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Sistema de Reservas</title>
+      <style>
+        :root {{
+          color-scheme: light;
+          --bg: linear-gradient(135deg, #081f3f, #0e4d92 60%, #7ec8e3);
+          --card: rgba(255, 255, 255, 0.94);
+          --accent: #d64545;
+          --text: #132238;
+        }}
+        body {{
+          margin: 0;
+          min-height: 100vh;
+          font-family: Georgia, "Times New Roman", serif;
+          background: var(--bg);
+          display: grid;
+          place-items: center;
+          color: var(--text);
+        }}
+        main {{
+          width: min(92vw, 720px);
+          background: var(--card);
+          padding: 2rem;
+          border-radius: 24px;
+          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+        }}
+        h1 {{ margin-top: 0; }}
+        form {{
+          display: grid;
+          gap: 0.8rem;
+          margin-top: 1rem;
+        }}
+        input, button {{
+          padding: 0.9rem 1rem;
+          border-radius: 12px;
+          border: 1px solid #c8d4df;
+          font: inherit;
+        }}
+        button {{
+          background: var(--accent);
+          color: white;
+          border: 0;
+          cursor: pointer;
+        }}
+        pre {{
+          white-space: pre-wrap;
+          background: #0f172a;
+          color: #e2e8f0;
+          padding: 1rem;
+          border-radius: 16px;
+          min-height: 140px;
+        }}
+      </style>
+    </head>
+    <body>
+      <main>
+        <h1>Sistema de Reservas de Entradas</h1>
+        <p>Frontend de demostracion para Kubernetes multi-nodo. El API Gateway expuesto usa el puerto {GATEWAY_NODEPORT}.</p>
+        <form id="buy-form">
+          <input id="cliente" name="cliente" placeholder="Cliente" value="demo-web" required />
+          <input id="evento" name="evento" placeholder="Evento" value="concierto-kubernetes" required />
+          <input id="cantidad" name="cantidad" placeholder="Cantidad" type="number" min="1" value="1" required />
+          <button type="submit">Comprar</button>
+        </form>
+        <pre id="output">Esperando solicitud...</pre>
+      </main>
+      <script>
+        const form = document.getElementById('buy-form');
+        const output = document.getElementById('output');
+        form.addEventListener('submit', async (event) => {{
+          event.preventDefault();
+          const payload = {{
+            cliente: document.getElementById('cliente').value,
+            evento: document.getElementById('evento').value,
+            cantidad: Number(document.getElementById('cantidad').value)
+          }};
+          const base = window.location.hostname || '127.0.0.1';
+          output.textContent = 'Procesando compra...';
+          try {{
+            const response = await fetch(`http://${{base}}:{GATEWAY_NODEPORT}/api/comprar`, {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify(payload)
+            }});
+            const data = await response.json();
+            output.textContent = JSON.stringify(data, null, 2);
+          }} catch (error) {{
+            output.textContent = JSON.stringify({{ ok: false, error: String(error) }}, null, 2);
+          }}
+        }});
+      </script>
+    </body>
+    </html>
+    """
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/health":
+                data = json.dumps({"status": "ok"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if self.path == "/" or self.path == "/index.html":
+                data = HTML.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"frontend escuchando en {PORT}", flush=True)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reservas-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib import error, request
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    INVENTARIO_URL = os.environ.get("INVENTARIO_URL", "http://inventario:8080")
+    PAGOS_URL = os.environ.get("PAGOS_URL", "http://pagos:8080")
+    NOTIFICACIONES_URL = os.environ.get("NOTIFICACIONES_URL", "http://notificaciones:8080")
+    DATABASE_URL = os.environ.get("DATABASE_URL", "http://database:8080")
+    INVENTORY_TIMEOUT = float(os.environ.get("INVENTORY_TIMEOUT_SECONDS", "2"))
+    PAYMENT_TIMEOUT = float(os.environ.get("PAYMENT_TIMEOUT_SECONDS", "5"))
+    NOTIFICATION_TIMEOUT = float(os.environ.get("NOTIFICATION_TIMEOUT_SECONDS", "2"))
+    DATABASE_TIMEOUT = float(os.environ.get("DATABASE_TIMEOUT_SECONDS", "2"))
+    PAYMENT_RETRIES = int(os.environ.get("PAYMENT_RETRIES", "2"))
+    PAYMENT_BACKOFF_SECONDS = float(os.environ.get("PAYMENT_BACKOFF_SECONDS", "1"))
+    MAX_CONCURRENT_PURCHASES = int(os.environ.get("MAX_CONCURRENT_PURCHASES", "5"))
+    CB_FAILURE_THRESHOLD = int(os.environ.get("PAYMENT_CB_FAILURE_THRESHOLD", "3"))
+    CB_OPEN_SECONDS = int(os.environ.get("PAYMENT_CB_OPEN_SECONDS", "30"))
+
+    SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_PURCHASES)
+    BREAKER_LOCK = threading.Lock()
+    BREAKER_STATE = {
+        "status": "closed",
+        "failures": 0,
+        "open_until": 0.0,
+        "half_open_in_flight": False,
+    }
+
+
+    def send_json(handler, status, payload):
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+
+    def parse_body(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+    def http_json(base_url, path, timeout, method="GET", payload=None):
+        body = None
+        headers = {}
+        if payload is not None:
+            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = request.Request(f"{base_url}{path}", data=body, headers=headers, method=method)
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return resp.status, json.loads(raw) if raw else {}
+        except error.HTTPError as exc:
+            raw = exc.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            return exc.code, payload
+
+
+    def breaker_before_call():
+        now = time.time()
+        with BREAKER_LOCK:
+            if BREAKER_STATE["status"] == "open":
+                if now < BREAKER_STATE["open_until"]:
+                    return False, max(0, int(BREAKER_STATE["open_until"] - now))
+                BREAKER_STATE["status"] = "half-open"
+                BREAKER_STATE["half_open_in_flight"] = False
+            if BREAKER_STATE["status"] == "half-open":
+                if BREAKER_STATE["half_open_in_flight"]:
+                    return False, 0
+                BREAKER_STATE["half_open_in_flight"] = True
+            return True, 0
+
+
+    def breaker_success():
+        with BREAKER_LOCK:
+            BREAKER_STATE["status"] = "closed"
+            BREAKER_STATE["failures"] = 0
+            BREAKER_STATE["open_until"] = 0.0
+            BREAKER_STATE["half_open_in_flight"] = False
+
+
+    def breaker_failure():
+        now = time.time()
+        with BREAKER_LOCK:
+            if BREAKER_STATE["status"] == "half-open":
+                BREAKER_STATE["status"] = "open"
+                BREAKER_STATE["failures"] = CB_FAILURE_THRESHOLD
+                BREAKER_STATE["open_until"] = now + CB_OPEN_SECONDS
+                BREAKER_STATE["half_open_in_flight"] = False
+                return
+            BREAKER_STATE["failures"] += 1
+            if BREAKER_STATE["failures"] >= CB_FAILURE_THRESHOLD:
+                BREAKER_STATE["status"] = "open"
+                BREAKER_STATE["open_until"] = now + CB_OPEN_SECONDS
+            BREAKER_STATE["half_open_in_flight"] = False
+
+
+    def release_inventory(payload):
+        try:
+            status, _ = http_json(INVENTARIO_URL, "/inventario/liberar", INVENTORY_TIMEOUT, method="POST", payload=payload)
+            return status == 200
+        except Exception:
+            return False
+
+
+    def attempt_payment(payload):
+        last_error = {"error": "pago_no_disponible"}
+        for attempt in range(1, PAYMENT_RETRIES + 1):
+            allowed, retry_after = breaker_before_call()
+            if not allowed:
+                last_error = {
+                    "error": "circuito_pagos_abierto",
+                    "retry_after_seconds": retry_after,
+                }
+                break
+            try:
+                status, response = http_json(PAGOS_URL, "/pagar", PAYMENT_TIMEOUT, method="POST", payload=payload)
+                if status == 200 and response.get("ok"):
+                    breaker_success()
+                    return True, response
+                last_error = response or {"error": "pago_no_disponible"}
+            except Exception as exc:
+                last_error = {"error": "pago_timeout", "reason": str(exc)}
+            breaker_failure()
+            if attempt < PAYMENT_RETRIES:
+                time.sleep(PAYMENT_BACKOFF_SECONDS * attempt)
+        return False, last_error
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/health":
+                return send_json(
+                    self,
+                    200,
+                    {
+                        "status": "ok",
+                        "bulkhead_limit": MAX_CONCURRENT_PURCHASES,
+                        "payment_breaker": BREAKER_STATE["status"],
+                    },
+                )
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+        def do_POST(self):
+            if self.path != "/comprar":
+                return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+            if not SEMAPHORE.acquire(blocking=False):
+                return send_json(
+                    self,
+                    429,
+                    {
+                        "ok": False,
+                        "fase": "bulkhead",
+                        "error": "demasiadas_solicitudes_concurrentes",
+                        "accion": "rechazo_temporal",
+                    },
+                )
+            try:
+                body = parse_body(self)
+                payload = {
+                    "cliente": body.get("cliente", "anonimo"),
+                    "evento": body.get("evento", "concierto-kubernetes"),
+                    "cantidad": int(body.get("cantidad", 1)),
+                }
+
+                try:
+                    status, inventory_response = http_json(
+                        INVENTARIO_URL,
+                        "/inventario/reservar",
+                        INVENTORY_TIMEOUT,
+                        method="POST",
+                        payload=payload,
+                    )
+                except Exception as exc:
+                    return send_json(
+                        self,
+                        503,
+                        {
+                            "ok": False,
+                            "fase": "inventario",
+                            "error": "inventario_no_disponible",
+                            "accion": "error_controlado_sin_cobro",
+                            "detalle": str(exc),
+                        },
+                    )
+
+                if status != 200 or not inventory_response.get("ok"):
+                    return send_json(
+                        self,
+                        503 if status >= 500 else status,
+                        {
+                            "ok": False,
+                            "fase": "inventario",
+                            "error": "inventario_no_disponible",
+                            "accion": "error_controlado_sin_cobro",
+                            "inventario": inventory_response,
+                        },
+                    )
+
+                payment_ok, payment_response = attempt_payment(payload)
+                if not payment_ok:
+                    released = release_inventory(payload)
+                    return send_json(
+                        self,
+                        503,
+                        {
+                            "ok": False,
+                            "fase": "pagos",
+                            "error": payment_response.get("error", "pago_no_disponible"),
+                            "accion": "compra_cancelada_con_compensacion",
+                            "compensacion": {
+                                "inventario_liberado": released,
+                                "accion": "liberacion_intentada",
+                            },
+                            "pagos": payment_response,
+                        },
+                    )
+
+                persistence = {"estado": "guardado"}
+                try:
+                    status, db_response = http_json(
+                        DATABASE_URL,
+                        "/bookings/record",
+                        DATABASE_TIMEOUT,
+                        method="POST",
+                        payload={
+                            **payload,
+                            "pago": payment_response,
+                        },
+                    )
+                    if status >= 400 or not db_response.get("ok"):
+                        persistence = {
+                            "estado": "pendiente",
+                            "error": db_response.get("persistencia", "no_guardado"),
+                        }
+                except Exception as exc:
+                    persistence = {"estado": "pendiente", "error": f"no_guardado:{exc}"}
+
+                notification = {"ok": True}
+                warning = None
+                try:
+                    n_status, n_response = http_json(
+                        NOTIFICACIONES_URL,
+                        "/notificar",
+                        NOTIFICATION_TIMEOUT,
+                        method="POST",
+                        payload=payload,
+                    )
+                    notification = n_response
+                    if n_status >= 400 or not n_response.get("ok"):
+                        notification = {"ok": False, "detalle": n_response}
+                        warning = "notificacion_fallida_no_critica"
+                except Exception as exc:
+                    notification = {"ok": False, "detalle": str(exc)}
+                    warning = "notificacion_fallida_no_critica"
+
+                response = {
+                    "ok": True,
+                    "fase": "completado",
+                    "inventario": inventory_response,
+                    "pago": payment_response,
+                    "persistencia": persistence,
+                    "notificacion": notification,
+                }
+                if warning:
+                    response["warning"] = warning
+                return send_json(self, 200, response)
+            finally:
+                SEMAPHORE.release()
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"reservas escuchando en {PORT}", flush=True)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventario-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib import error, request
+    from urllib.parse import quote
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    DATABASE_URL = os.environ.get("DATABASE_URL", "http://database:8080")
+    TIMEOUT = float(os.environ.get("DATABASE_TIMEOUT_SECONDS", "2"))
+
+
+    def send_json(handler, status, payload):
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+
+    def parse_body(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+    def call_database(path, method="GET", payload=None):
+        body = None
+        headers = {}
+        if payload is not None:
+            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = request.Request(f"{DATABASE_URL}{path}", data=body, headers=headers, method=method)
+        try:
+            with request.urlopen(req, timeout=TIMEOUT) as resp:
+                response_body = resp.read().decode("utf-8")
+                return resp.status, json.loads(response_body) if response_body else {}
+        except error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8")
+            parsed = json.loads(response_body) if response_body else {}
+            return exc.code, parsed
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/health":
+                try:
+                    status, payload = call_database("/health")
+                    return send_json(self, 200 if status == 200 else 503, {"status": "ok", "database": payload})
+                except Exception as exc:
+                    return send_json(self, 503, {"status": "error", "database": "unreachable", "reason": str(exc)})
+            if self.path.startswith("/inventario/"):
+                event = self.path.split("/inventario/", 1)[1]
+                try:
+                    status, payload = call_database(f"/events/{quote(event)}")
+                    return send_json(self, status, payload)
+                except Exception as exc:
+                    return send_json(self, 503, {"ok": False, "error": "database_no_disponible", "reason": str(exc)})
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+        def do_POST(self):
+            body = parse_body(self)
+            try:
+                if self.path == "/inventario/reservar":
+                    status, payload = call_database("/inventory/reserve", method="POST", payload=body)
+                    return send_json(self, status, payload)
+                if self.path == "/inventario/liberar":
+                    status, payload = call_database("/inventory/release", method="POST", payload=body)
+                    return send_json(self, status, payload)
+            except Exception as exc:
+                return send_json(self, 503, {"ok": False, "error": "database_no_disponible", "reason": str(exc)})
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"inventario escuchando en {PORT}", flush=True)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pagos-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import random
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+
+
+    def payment_delay():
+        return float(os.environ.get("PAYMENT_DELAY_SECONDS", "0"))
+
+
+    def fail_rate():
+        return float(os.environ.get("PAYMENT_FAIL_RATE", "0"))
+
+
+    def send_json(handler, status, payload):
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+
+    def parse_body(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/health":
+                return send_json(
+                    self,
+                    200,
+                    {
+                        "status": "ok",
+                        "payment_delay_seconds": payment_delay(),
+                        "payment_fail_rate": fail_rate(),
+                    },
+                )
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+        def do_POST(self):
+            if self.path != "/pagar":
+                return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+            body = parse_body(self)
+            delay = payment_delay()
+            if delay > 0:
+                time.sleep(delay)
+            if random.random() < fail_rate():
+                return send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "error": "pago_rechazado",
+                        "evento": body.get("evento"),
+                    },
+                )
+            return send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "transaccion": f"pay-{int(time.time() * 1000)}",
+                    "evento": body.get("evento"),
+                    "cliente": body.get("cliente"),
+                },
+            )
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"pagos escuchando en {PORT}", flush=True)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notificaciones-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import random
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+
+
+    def fail_rate():
+        return float(os.environ.get("NOTIFICATION_FAIL_RATE", "0"))
+
+
+    def send_json(handler, status, payload):
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+
+    def parse_body(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/health":
+                return send_json(
+                    self,
+                    200,
+                    {"status": "ok", "notification_fail_rate": fail_rate()},
+                )
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+        def do_POST(self):
+            if self.path != "/notificar":
+                return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+            body = parse_body(self)
+            time.sleep(0.1)
+            if random.random() < fail_rate():
+                return send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "error": "notificacion_fallida",
+                        "cliente": body.get("cliente"),
+                    },
+                )
+            return send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "mensaje": "notificacion_enviada",
+                    "cliente": body.get("cliente"),
+                },
+            )
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"notificaciones escuchando en {PORT}", flush=True)
+        server.serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-code
+  namespace: ticket-system
+data:
+  app.py: |
+    import json
+    import os
+    import tempfile
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import unquote, urlparse
+
+
+    PORT = int(os.environ.get("PORT", "8080"))
+    DATA_DIR = os.environ.get("DATA_DIR", "/data")
+    DATA_FILE = os.path.join(DATA_DIR, "ticket-system.json")
+    DEFAULT_EVENT = os.environ.get("DEFAULT_EVENT", "concierto-kubernetes")
+    DEFAULT_STOCK = int(os.environ.get("DEFAULT_STOCK", "10"))
+    FAIL_WRITES = os.environ.get("DATABASE_FAIL_WRITES", "false").lower() == "true"
+
+    STATE_LOCK = threading.Lock()
+    STATE = None
+
+
+    def ensure_state():
+        global STATE
+        os.makedirs(DATA_DIR, exist_ok=True)
+        if STATE is not None:
+            return STATE
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as fh:
+                STATE = json.load(fh)
+        else:
+            STATE = {
+                "events": {
+                    DEFAULT_EVENT: {
+                        "available": DEFAULT_STOCK,
+                        "reserved": 0,
+                    }
+                },
+                "bookings": [],
+            }
+            persist_state()
+        return STATE
+
+
+    def persist_state():
+        if FAIL_WRITES:
+            raise RuntimeError("database_write_failure_simulated")
+        fd, temp_path = tempfile.mkstemp(dir=DATA_DIR, prefix="ticket-system-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(STATE, fh, ensure_ascii=True, indent=2)
+            os.replace(temp_path, DATA_FILE)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
+    def send_json(handler, status, payload):
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+
+    def parse_body(handler):
+        length = int(handler.headers.get("Content-Length", "0"))
+        raw = handler.rfile.read(length) if length > 0 else b"{}"
+        if not raw:
+            return {}
+        return json.loads(raw.decode("utf-8"))
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/health":
+                ensure_state()
+                return send_json(
+                    self,
+                    200,
+                    {
+                        "status": "ok",
+                        "data_file": DATA_FILE,
+                        "events": list(STATE["events"].keys()),
+                    },
+                )
+            if parsed.path == "/debug/state":
+                ensure_state()
+                with STATE_LOCK:
+                    snapshot = json.loads(json.dumps(STATE))
+                return send_json(self, 200, snapshot)
+            if parsed.path.startswith("/events/"):
+                ensure_state()
+                event = unquote(parsed.path.split("/events/", 1)[1])
+                with STATE_LOCK:
+                    event_state = STATE["events"].get(event)
+                if not event_state:
+                    return send_json(self, 404, {"ok": False, "error": "evento_no_encontrado", "evento": event})
+                return send_json(self, 200, {"ok": True, "evento": event, **event_state})
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+        def do_POST(self):
+            ensure_state()
+            if self.path == "/inventory/reserve":
+                body = parse_body(self)
+                event = body.get("evento", DEFAULT_EVENT)
+                cantidad = int(body.get("cantidad", 1))
+                with STATE_LOCK:
+                    event_state = STATE["events"].setdefault(
+                        event,
+                        {"available": DEFAULT_STOCK, "reserved": 0},
+                    )
+                    if event_state["available"] < cantidad:
+                        return send_json(
+                            self,
+                            409,
+                            {
+                                "ok": False,
+                                "error": "sin_stock",
+                                "evento": event,
+                                "available": event_state["available"],
+                            },
+                        )
+                    event_state["available"] -= cantidad
+                    event_state["reserved"] += cantidad
+                    persist_state()
+                    snapshot = dict(event_state)
+                return send_json(self, 200, {"ok": True, "evento": event, **snapshot})
+            if self.path == "/inventory/release":
+                body = parse_body(self)
+                event = body.get("evento", DEFAULT_EVENT)
+                cantidad = int(body.get("cantidad", 1))
+                with STATE_LOCK:
+                    event_state = STATE["events"].setdefault(
+                        event,
+                        {"available": DEFAULT_STOCK, "reserved": 0},
+                    )
+                    event_state["available"] += cantidad
+                    event_state["reserved"] = max(0, event_state["reserved"] - cantidad)
+                    persist_state()
+                    snapshot = dict(event_state)
+                return send_json(self, 200, {"ok": True, "evento": event, **snapshot})
+            if self.path == "/bookings/record":
+                body = parse_body(self)
+                with STATE_LOCK:
+                    STATE["bookings"].append(body)
+                    try:
+                        persist_state()
+                        return send_json(
+                            self,
+                            201,
+                            {
+                                "ok": True,
+                                "persistencia": "guardado",
+                                "reservas_registradas": len(STATE["bookings"]),
+                            },
+                        )
+                    except Exception as exc:
+                        return send_json(
+                            self,
+                            503,
+                            {
+                                "ok": False,
+                                "persistencia": "no_guardado",
+                                "error": str(exc),
+                            },
+                        )
+            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
+
+
+    if __name__ == "__main__":
+        ensure_state()
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"database escuchando en {PORT}", flush=True)
+        server.serve_forever()

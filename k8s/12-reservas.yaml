@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reservas
+  namespace: ticket-system
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  selector:
+    matchLabels:
+      app: reservas
+  template:
+    metadata:
+      labels:
+        app: reservas
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - reservas
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: reservas
+          image: python:3.11-alpine
+          command: ["python", "/app/app.py"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: INVENTARIO_URL
+              value: "http://inventario:8080"
+            - name: PAGOS_URL
+              value: "http://pagos:8080"
+            - name: NOTIFICACIONES_URL
+              value: "http://notificaciones:8080"
+            - name: DATABASE_URL
+              value: "http://database:8080"
+            - name: INVENTORY_TIMEOUT_SECONDS
+              value: "2"
+            - name: PAYMENT_TIMEOUT_SECONDS
+              value: "5"
+            - name: NOTIFICATION_TIMEOUT_SECONDS
+              value: "2"
+            - name: DATABASE_TIMEOUT_SECONDS
+              value: "2"
+            - name: PAYMENT_RETRIES
+              value: "2"
+            - name: PAYMENT_BACKOFF_SECONDS
+              value: "1"
+            - name: MAX_CONCURRENT_PURCHASES
+              value: "5"
+            - name: PAYMENT_CB_FAILURE_THRESHOLD
+              value: "3"
+            - name: PAYMENT_CB_OPEN_SECONDS
+              value: "30"
+          volumeMounts:
+            - name: app-code
+              mountPath: /app/app.py
+              subPath: app.py
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+      volumes:
+        - name: app-code
+          configMap:
+            name: reservas-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reservas
+  namespace: ticket-system
+spec:
+  selector:
+    app: reservas
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
