@@ -9,9 +9,16 @@ RESERVAS_URL = os.environ.get("RESERVAS_URL", "http://reservas:8080")
 TIMEOUT = float(os.environ.get("RESERVAS_TIMEOUT_SECONDS", "18"))
 
 
+def send_cors_headers(handler):
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+
 def send_json(handler, status, payload):
     data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     handler.send_response(status)
+    send_cors_headers(handler)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
@@ -44,6 +51,12 @@ def proxy_purchase(payload):
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        send_cors_headers(self)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self):
         if self.path == "/health":
