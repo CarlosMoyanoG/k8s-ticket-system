@@ -142,6 +142,25 @@ class Handler(BaseHTTPRequestHandler):
                 persist_state()
                 snapshot = dict(event_state)
             return send_json(self, 200, {"ok": True, "evento": event, **snapshot})
+        if self.path == "/inventory/restock":
+            body = parse_body(self)
+            event = body.get("evento", DEFAULT_EVENT)
+            cantidad = int(body.get("cantidad", 1))
+            if cantidad < 1:
+                return send_json(self, 400, {"ok": False, "error": "cantidad_invalida", "evento": event})
+            with STATE_LOCK:
+                event_state = STATE["events"].setdefault(
+                    event,
+                    {"available": DEFAULT_STOCK, "reserved": 0},
+                )
+                event_state["available"] += cantidad
+                persist_state()
+                snapshot = dict(event_state)
+            return send_json(
+                self,
+                200,
+                {"ok": True, "accion": "inventario_recargado", "evento": event, **snapshot},
+            )
         if self.path == "/bookings/record":
             body = parse_body(self)
             with STATE_LOCK:

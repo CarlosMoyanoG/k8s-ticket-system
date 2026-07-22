@@ -71,6 +71,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/inventario/liberar":
                 status, payload = call_database("/inventory/release", method="POST", payload=body)
                 return send_json(self, status, payload)
+            if self.path == "/inventario/recargar":
+                status, payload = call_database("/inventory/restock", method="POST", payload=body)
+                return send_json(self, status, payload)
         except Exception as exc:
             return send_json(self, 503, {"ok": False, "error": "database_no_disponible", "reason": str(exc)})
         return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})

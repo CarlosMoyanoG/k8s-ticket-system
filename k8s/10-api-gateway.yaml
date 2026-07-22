@@ -24,6 +24,8 @@ spec:
               value: "8080"
             - name: RESERVAS_URL
               value: "http://reservas:8080"
+            - name: INVENTARIO_URL
+              value: "http://inventario:8080"
             - name: RESERVAS_TIMEOUT_SECONDS
               value: "18"
           volumeMounts:

@@ -195,13 +195,14 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             if status != 200 or not inventory_response.get("ok"):
+                inventory_error = inventory_response.get("error", "inventario_no_disponible")
                 return send_json(
                     self,
                     503 if status >= 500 else status,
                     {
                         "ok": False,
                         "fase": "inventario",
-                        "error": "inventario_no_disponible",
+                        "error": inventory_error,
                         "accion": "error_controlado_sin_cobro",
                         "inventario": inventory_response,
                     },

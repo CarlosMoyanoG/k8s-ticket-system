@@ -22,6 +22,8 @@ spec:
           env:
             - name: RESERVAS_URL
               value: "http://reservas:8080"
+            - name: INVENTARIO_URL
+              value: "http://inventario:8080"
           volumeMounts:
             - name: api-gateway-code
               mountPath: /app/app.py

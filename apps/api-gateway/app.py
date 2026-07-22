@@ -6,6 +6,7 @@ from urllib import error, request
 
 PORT = int(os.environ.get("PORT", "8080"))
 RESERVAS_URL = os.environ.get("RESERVAS_URL", "http://reservas:8080")
+INVENTARIO_URL = os.environ.get("INVENTARIO_URL", "http://inventario:8080")
 TIMEOUT = float(os.environ.get("RESERVAS_TIMEOUT_SECONDS", "18"))
 
 
@@ -32,15 +33,18 @@ def parse_body(handler):
 
 
 def proxy_purchase(payload):
-    body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-    req = request.Request(
-        f"{RESERVAS_URL}/comprar",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    return proxy_json(RESERVAS_URL, "/comprar", method="POST", payload=payload)
+
+
+def proxy_json(base_url, path, method="GET", payload=None, timeout=TIMEOUT):
+    body = None
+    headers = {}
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = request.Request(f"{base_url}{path}", data=body, headers=headers, method=method)
     try:
-        with request.urlopen(req, timeout=TIMEOUT) as resp:
+        with request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return resp.status, json.loads(raw) if raw else {}
     except error.HTTPError as exc:
@@ -60,27 +64,67 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            return send_json(self, 200, {"status": "ok", "upstream": RESERVAS_URL})
+            return send_json(
+                self,
+                200,
+                {"status": "ok", "upstream": {"reservas": RESERVAS_URL, "inventario": INVENTARIO_URL}},
+            )
+        if self.path.startswith("/api/inventario/"):
+            event = self.path.split("/api/inventario/", 1)[1]
+            try:
+                status, response = proxy_json(INVENTARIO_URL, f"/inventario/{event}")
+                return send_json(self, status, response)
+            except Exception as exc:
+                return send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "fase": "gateway",
+                        "error": "inventario_no_disponible",
+                        "detalle": str(exc),
+                    },
+                )
         return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
 
     def do_POST(self):
-        if self.path != "/api/comprar":
-            return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
         body = parse_body(self)
-        try:
-            status, response = proxy_purchase(body)
-            return send_json(self, status, response)
-        except Exception as exc:
-            return send_json(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "fase": "gateway",
-                    "error": "reservas_no_disponible",
-                    "detalle": str(exc),
-                },
-            )
+        if self.path == "/api/comprar":
+            try:
+                status, response = proxy_purchase(body)
+                return send_json(self, status, response)
+            except Exception as exc:
+                return send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "fase": "gateway",
+                        "error": "reservas_no_disponible",
+                        "detalle": str(exc),
+                    },
+                )
+        if self.path == "/api/inventario/recargar":
+            try:
+                status, response = proxy_json(
+                    INVENTARIO_URL,
+                    "/inventario/recargar",
+                    method="POST",
+                    payload=body,
+                )
+                return send_json(self, status, response)
+            except Exception as exc:
+                return send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "fase": "gateway",
+                        "error": "inventario_no_disponible",
+                        "detalle": str(exc),
+                    },
+                )
+        return send_json(self, 404, {"ok": False, "error": "ruta_no_encontrada"})
 
 
 if __name__ == "__main__":
